@@ -13,9 +13,18 @@ using namespace std;
 // Basic Data Structures
 // ========================
 
+enum Side {
+    BUY, SELL
+};
+
+struct Trader {
+    string name;
+    int position = 0; // current position
+    int pnl = 0;      // profit/loss
+};
 struct Order {
-    string traderName;
-    string side; // "BUY" or "SELL"
+    std::unique_ptr<Trader> trader;
+    Side side; // "BUY" or "SELL"
     int quantity;
     int price;
     int timestamp;
@@ -34,12 +43,14 @@ struct BuyOrderCompare {
         return a.price < b.price;
     }
 };
-
-struct Trader {
-    string name;
-    int position = 0; // current position
-    int pnl = 0;      // profit/loss
+struct Transaction {
+    Trader* buyer;
+    Trader* seller;
+    int quantity;
+    int price;
+    int timestamp;
 };
+
 
 // ========================
 // Exchange / OrderBook
@@ -53,10 +64,10 @@ private:
 
 public:
     void addOrder(const Order& order) {
-        if (order.side == "BUY") {
-            buyOrders.insert(order);
-        } else if (order.side == "SELL") {
-            sellOrders.insert(order);
+        if (order.side == BUY) {
+            // buyOrders.insert(order);
+        } else if (order.side == SELL) {
+            // sellOrders.insert(order);
         } else {
             throw domain_error("order.side is not BUY or SELL.");
         }
@@ -71,15 +82,23 @@ public:
         cout << "Order Book:\n";
         cout << "  Bids:\n";
         for (const auto& o : buyOrders)
-            cout << "    " << o.traderName << " " << o.quantity << " @ " << o.price << "\n";
+            cout << "    " << o.trader->name << " " << o.quantity << " @ " << o.price << "\n";
 
         cout << "  Asks:\n";
         for (const auto& o : sellOrders)
-            cout << "    " << o.traderName << " " << o.quantity << " @ " << o.price << "\n";
+            cout << "    " << o.trader->name << " " << o.quantity << " @ " << o.price << "\n";
 
         cout << "Traders:\n";
         for (const auto& [name, t] : traders) {
             cout << "  " << name << ": position=" << t.position << ", pnl=" << t.pnl << "\n";
+        }
+        auto topBuy = buyOrders.begin();
+        auto topSell = sellOrders.begin();
+        if (topBuy == buyOrders.end() || topSell == sellOrders.end()) {
+            return;
+        }
+        if (topBuy->price >= topSell->price) {
+            cout << "A sale should go through!\n";
         }
     }
 
@@ -109,14 +128,15 @@ void upper(string& line) {
 
 Order parseOrder(const string& line) {
     stringstream ss(line);
-    string side, trader;
+    string sideStr, name;
+    Side side;
     int qty, price;
 
-    if (!(ss >> side >> trader >> qty >> price)) {
-        throw invalid_argument("Invalid format: expected SIDE TRADER QTY PRICE");
+    if (!(ss >> sideStr >> name >> qty >> price)) {
+        throw invalid_argument("Invalid format: expected SIDE NAME QTY PRICE");
     }
-    upper(side);
-    capitalise(trader);
+    upper(sideStr);
+    capitalise(name);
 
     // Check for extra tokens
     string extra;
@@ -124,9 +144,14 @@ Order parseOrder(const string& line) {
         throw invalid_argument("Invalid format: extra input detected");
     }
     // Validate side
-    if (side != "BUY" && side != "SELL") {
+    if (sideStr == "ASK" || sideStr == "SELL") {
+        side = SELL;
+    } else if (sideStr == "BID" || sideStr == "BUY") {
+        side = BUY;
+    } else {
         throw invalid_argument("Side must be BUY or SELL");
     }
+    
     // Validate quantity and price
     if (qty <= 0) {
         throw invalid_argument("Quantity must be positive");
@@ -134,6 +159,8 @@ Order parseOrder(const string& line) {
     if (price <= 0) {
         throw invalid_argument("Price must be positive");
     }
+
+    auto trader = std::make_unique<Trader>(Trader{name, 0, 0});
 
     return Order{trader, side, qty, price};
 }

@@ -2,6 +2,7 @@
     "files.associations": {
         "*.rmd": "rmarkdown",
         "*.Rmd": "rmd",
-        "stdexcept": "cpp"
+        "stdexcept": "cpp",
+        "set": "cpp"
     }
 }
