@@ -1,75 +1,84 @@
-#include <iostream>
-#include <vector>
-#include <string>
-#include <sstream>
 #include <algorithm>
+#include <iostream>
 #include <map>
-#include <stdexcept>
+#include <memory>
 #include <set>
-
-using namespace std;
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 // ========================
 // Basic Data Structures
 // ========================
 
-enum Side {
-    BUY, SELL
-};
-
+enum Side { BUY, SELL };
 struct Trader {
-    string name;
+    std::string name;
     int position = 0; // current position
     int pnl = 0;      // profit/loss
 };
+std::ostream &operator<<(std::ostream &os, const Trader &t) {
+    os << t.name << ": position=" << t.position << ", pnl=" << t.pnl;
+}
+
+// TODO: move back to OrderBook & use unique/shared_ptr (concurrency issues)
+std::vector<Trader> traders;
+
 struct Order {
-    std::unique_ptr<Trader> trader;
-    Side side; // "BUY" or "SELL"
+    // std::unique_ptr<Trader> trader; // TODO: figure out how to use
+    int traderId; // XXX: potential concurrency issues
+    Side side;
     int quantity;
     int price;
     int timestamp;
 };
+std::ostream &operator<<(std::ostream &os, const Order &o) {
+    // TODO: trader name rather than ID in order?
+    os << traders[o.traderId].name << " " << o.quantity << " @ " << o.price;
+}
+
+// TODO: replace with operator<=> perhaps? (What to do if side differs though?)
 // comparator for sellOrders (lowest price first)
 struct SellOrderCompare {
-    bool operator()(const Order& a, const Order& b) const {
+    bool operator()(const Order &a, const Order &b) const {
         if (a.price == b.price) return a.timestamp > b.timestamp;
         return a.price > b.price; // min-heap
     }
 };
 // comparator for buyOrders (highest price first)
 struct BuyOrderCompare {
-    bool operator()(const Order& a, const Order& b) const {
+    bool operator()(const Order &a, const Order &b) const {
         if (a.price == b.price) return a.timestamp > b.timestamp;
         return a.price < b.price;
     }
 };
+
 struct Transaction {
-    Trader* buyer;
-    Trader* seller;
+    int buyerId; // XXX: potential concurrency issues?
+    int sellerId;
+    // aggressor?
     int quantity;
     int price;
     int timestamp;
 };
-
 
 // ========================
 // Exchange / OrderBook
 // ========================
 
 class OrderBook {
-private:
-    multiset<Order, BuyOrderCompare> buyOrders;
-    multiset<Order, SellOrderCompare> sellOrders;
-    map<string, Trader> traders;
+  private:
+    std::multiset<Order, BuyOrderCompare> buyOrders;
+    std::multiset<Order, SellOrderCompare> sellOrders;
+    // std::map<std::string, Trader> traders;
 
-public:
-    void addOrder(const Order& order) {
+  public:
+    void addOrder(const Order &order) {
         if (order.side == BUY) {
             // buyOrders.insert(order);
         } else if (order.side == SELL) {
             // sellOrders.insert(order);
-        } else {
-            throw domain_error("order.side is not BUY or SELL.");
         }
     }
 
@@ -79,18 +88,20 @@ public:
     }
 
     void printStatus() {
-        cout << "Order Book:\n";
-        cout << "  Bids:\n";
-        for (const auto& o : buyOrders)
-            cout << "    " << o.trader->name << " " << o.quantity << " @ " << o.price << "\n";
+        std::cout << "Order Book:\n";
+        std::cout << "  Bids:\n";
+        for (const auto &bid : buyOrders) {
+            std::cout << "    " << bid << "\n";
+        }
 
-        cout << "  Asks:\n";
-        for (const auto& o : sellOrders)
-            cout << "    " << o.trader->name << " " << o.quantity << " @ " << o.price << "\n";
+        std::cout << "  Asks:\n";
+        for (const auto &ask : sellOrders) {
+            std::cout << "    " << ask << "\n";
+        }
 
-        cout << "Traders:\n";
-        for (const auto& [name, t] : traders) {
-            cout << "  " << name << ": position=" << t.position << ", pnl=" << t.pnl << "\n";
+        std::cout << "Traders:\n";
+        for (const auto &t : traders) {
+            std::cout << "    " << t << "\n";
         }
         auto topBuy = buyOrders.begin();
         auto topSell = sellOrders.begin();
@@ -98,14 +109,74 @@ public:
             return;
         }
         if (topBuy->price >= topSell->price) {
-            cout << "A sale should go through!\n";
+            std::cout << "A sale should go through!\n";
         }
     }
 
-    void registerTrader(const string& name) {
-        if (traders.find(name) == traders.end()) {
-            traders[name] = Trader{name};
+    void registerTrader(const std::string &name) {
+        // if (traders.find(name) == traders.end()) {
+        //     traders[name] = Trader{name};
+        // }
+
+        auto sameName = std::find_if(traders.begin(), traders.end(),
+                                     [&](Trader t) { return t.name == name; });
+
+        if (sameName == traders.end()) {
+            traders.emplace_back(Trader{name});
+        } else {
+            // TODO: error handling (could return ID of existing trader?)
+            // ... or, could change this to getTraderId, or getOrCreate or smth
         }
+    }
+
+    Order parseOrder(const std::string &line) {
+        std::stringstream ss(line);
+        std::string sideStr, name;
+        Side side;
+        int qty, price;
+
+        if (!(ss >> sideStr >> name >> qty >> price)) {
+            throw std ::invalid_argument(
+                "Invalid format: expected SIDE NAME QTY PRICE");
+        }
+        upper(sideStr);
+        capitalise(name);
+
+        // Check for extra tokens
+        std::string extra;
+        if (ss >> extra) {
+            throw std::invalid_argument("Invalid format: extra input detected");
+        }
+        // Validate side
+        if (sideStr == "ASK" || sideStr == "SELL") {
+            side = SELL;
+        } else if (sideStr == "BID" || sideStr == "BUY") {
+            side = BUY;
+        } else {
+            throw std::invalid_argument("Side must be BUY, BID, SELL, or ASK");
+        }
+
+        // Validate quantity and price
+        if (qty <= 0) {
+            throw std::invalid_argument("Quantity must be positive");
+        }
+        if (price <= 0) {
+            throw std::invalid_argument("Price must be positive");
+        }
+
+        // auto trader = std::make_unique<Trader>(Trader{name, 0, 0});
+
+        // TODO: improve (no linear search)... & duplicates register trader?
+        int traderId;
+        if (std::find_if(traders.begin(), traders.end(), [&](Trader t) {
+                return t.name == name;
+            }) == traders.end()) {
+            registerTrader(name);
+        } else {
+            // TODO: get ID
+        }
+
+        return Order{traderId, side, qty, price};
     }
 };
 
@@ -114,55 +185,33 @@ public:
 // ========================
 
 // Mainly just for practice: A capitalise function
-void capitalise(string& line) {
-    for (char& c : line) {
+void capitalise(std::string &line) {
+    // TODO: remove casts?
+    for (char &c : line) {
         c = std::tolower(static_cast<unsigned char>(c));
     }
-    line[0] = std::toupper(static_cast<unsigned char>(line[0]));
-}
-void upper(string& line) {
-    for (char& c : line) {
-        c = std::toupper(static_cast<unsigned char>(c));
+    if (line.size()) {
+        line[0] = std::toupper(static_cast<unsigned char>(line[0]));
     }
 }
+void upper(std::string &line) {
+    // for (char &c : line) {
+    //     c = std::toupper(static_cast<unsigned char>(c));
+    // }
 
-Order parseOrder(const string& line) {
-    stringstream ss(line);
-    string sideStr, name;
-    Side side;
-    int qty, price;
+    std::transform(line.begin(), line.end(), line.begin(), ::toupper);
+}
 
-    if (!(ss >> sideStr >> name >> qty >> price)) {
-        throw invalid_argument("Invalid format: expected SIDE NAME QTY PRICE");
-    }
-    upper(sideStr);
-    capitalise(name);
+// TODO: return type?
+Trader &getTraderByName(const std::string &name) {
+    auto it = std::find_if(traders.begin(), traders.end(),
+                           [&](Trader t) { return t.name == name; });
 
-    // Check for extra tokens
-    string extra;
-    if (ss >> extra) {
-        throw invalid_argument("Invalid format: extra input detected");
-    }
-    // Validate side
-    if (sideStr == "ASK" || sideStr == "SELL") {
-        side = SELL;
-    } else if (sideStr == "BID" || sideStr == "BUY") {
-        side = BUY;
+    if (it != traders.end()) {
+        return *it;
     } else {
-        throw invalid_argument("Side must be BUY or SELL");
+        // ???
     }
-    
-    // Validate quantity and price
-    if (qty <= 0) {
-        throw invalid_argument("Quantity must be positive");
-    }
-    if (price <= 0) {
-        throw invalid_argument("Price must be positive");
-    }
-
-    auto trader = std::make_unique<Trader>(Trader{name, 0, 0});
-
-    return Order{trader, side, qty, price};
 }
 
 // ========================
@@ -172,29 +221,31 @@ Order parseOrder(const string& line) {
 int main() {
     OrderBook ob;
 
-    cout << "Welcome to Mini Exchange!\n"
-    << "Please place trades in the format SIDE TRADER QTY PRICE (e.g. SELL TIM 10 300).\n"
-    << "Type EXIT to quit.\n";
+    std::cout
+        << "Welcome to Mini Exchange!\n"
+        << "Please place trades in the format SIDE TRADER QTY PRICE (e.g. "
+           "SELL TIM 10 300).\n"
+        << "Type EXIT to quit.\n";
 
-    string line;
+    std::string line;
     while (true) {
-        cout << "> ";
-        getline(cin, line); // getline 
+        std::cout << "> ";
+        std::getline(std::cin, line); // getline
         if (line == "EXIT") break;
 
         try {
-            Order o = parseOrder(line);
-            ob.registerTrader(o.traderName);
-            ob.addOrder(o);
+            Order o = ob.parseOrder(line);
+            // ob.registerTrader(o.trader.name);
+            ob.addOrder(o); // TODO: merge into parseOrder?
             ob.matchOrders();
             ob.printStatus();
-        } catch (const invalid_argument& e) {
+        } catch (const std::invalid_argument &e) {
             std::cout << e.what() << "\n";
-        } catch (const domain_error& e) {
+        } catch (const std::domain_error &e) {
             std::cout << e.what() << "\n";
         }
     }
 
-    cout << "Goodbye!\n";
+    std::cout << "Goodbye!\n";
     return 0;
 }
