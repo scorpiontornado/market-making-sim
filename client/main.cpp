@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -6,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 // ========================
@@ -32,26 +34,27 @@ struct Order {
     Side side;
     int quantity;
     int price;
-    int timestamp;
+    std::chrono::time_point<std::chrono::system_clock> timestamp;
 };
 std::ostream &operator<<(std::ostream &os, const Order &o) {
     // TODO: trader name rather than ID in order?
-    return os << traders[o.traderId].name << " " << o.quantity << " @ " << o.price;
+    return os << traders[o.traderId].name << " " << o.quantity << " @ "
+              << o.price;
 }
 
-// TODO: replace with operator<=> perhaps? (What to do if side differs
-// though?) comparator for sellOrders (lowest price first)
-struct SellOrderCompare {
-    bool operator()(const Order &a, const Order &b) const {
-        if (a.price == b.price) return a.timestamp > b.timestamp;
-        return a.price > b.price; // min-heap
-    }
-};
-// comparator for buyOrders (highest price first)
+// comparator for buyOrders (highest price first; FIFO / price-time-priority)
+// TODO: replace with operator<=> perhaps? (What to do if side differs?)
 struct BuyOrderCompare {
     bool operator()(const Order &a, const Order &b) const {
-        if (a.price == b.price) return a.timestamp > b.timestamp;
-        return a.price < b.price;
+        if (a.price == b.price) return a.timestamp < b.timestamp;
+        return a.price > b.price; // max-heap
+    }
+};
+// comparator for sellOrders (lowest price first; FIFO / price-time-priority)
+struct SellOrderCompare {
+    bool operator()(const Order &a, const Order &b) const {
+        if (a.price == b.price) return a.timestamp < b.timestamp;
+        return a.price < b.price; // min-heap
     }
 };
 
@@ -69,7 +72,7 @@ struct Transaction {
 // ========================
 
 // Mainly just for practice: A capitalise function
-void capitalise(std::string & line) {
+void capitalise(std::string &line) {
     // TODO: remove casts?
     for (char &c : line) {
         c = std::tolower(static_cast<unsigned char>(c));
@@ -78,7 +81,7 @@ void capitalise(std::string & line) {
         line[0] = std::toupper(static_cast<unsigned char>(line[0]));
     }
 }
-void upper(std::string & line) {
+void upper(std::string &line) {
     // for (char &c : line) {
     //     c = std::toupper(static_cast<unsigned char>(c));
     // }
@@ -91,12 +94,12 @@ void upper(std::string & line) {
 // ========================
 
 class OrderBook {
-    private:
+  private:
     std::multiset<Order, BuyOrderCompare> buyOrders;
     std::multiset<Order, SellOrderCompare> sellOrders;
     // std::map<std::string, Trader> traders;
 
-    public:
+  public:
     void addOrder(const Order &order) {
         if (order.side == BUY) {
             buyOrders.insert(order);
@@ -106,8 +109,37 @@ class OrderBook {
     }
 
     void matchOrders() {
-        // TODO: implement matching engine
-        // update positions and pnl
+        while (buyOrders.size() && sellOrders.size() &&
+               buyOrders.begin()->price >= sellOrders.begin()->price) {
+            auto buy = buyOrders.extract(buyOrders.begin());
+            auto sell = sellOrders.extract(sellOrders.begin());
+
+            int qty = std::min(buy.value().quantity, sell.value().quantity);
+            int price = buy.value().timestamp < sell.value().timestamp
+                            ? buy.value().price
+                            : sell.value().price;
+
+            // Update positions & pnl
+            int buyTrader = buy.value().traderId;
+            int sellTrader = sell.value().traderId;
+
+            traders[buyTrader].position += qty;
+            traders[sellTrader].position -= qty;
+
+            traders[buyTrader].pnl -= price * qty;
+            traders[sellTrader].pnl += price * qty;
+
+            // Update order quantities & insert if positive
+            if ((buy.value().quantity -= qty) > 0) {
+                buyOrders.insert(std::move(buy));
+            }
+
+            if ((sell.value().quantity -= qty) > 0) {
+                sellOrders.insert(std::move(sell));
+            }
+
+            // TODO: add transaction record
+        }
     }
 
     void printStatus() {
@@ -146,7 +178,7 @@ class OrderBook {
             traders.emplace_back(Trader{name});
             traderNameToId[name] = traders.size() - 1;
         }
-        
+
         return traderNameToId[name];
     }
 
@@ -166,8 +198,7 @@ class OrderBook {
         // Check for extra tokens
         std::string extra;
         if (ss >> extra) {
-            throw std::invalid_argument(
-                "Invalid format: extra input detected");
+            throw std::invalid_argument("Invalid format: extra input detected");
         }
         // Validate side
         if (sideStr == "ASK" || sideStr == "SELL") {
@@ -175,8 +206,7 @@ class OrderBook {
         } else if (sideStr == "BID" || sideStr == "BUY") {
             side = BUY;
         } else {
-            throw std::invalid_argument(
-                "Side must be BUY, BID, SELL, or ASK");
+            throw std::invalid_argument("Side must be BUY, BID, SELL, or ASK");
         }
 
         // Validate quantity and price
@@ -188,8 +218,9 @@ class OrderBook {
         }
 
         int traderId = registerTrader(name);
+        auto now = std::chrono::system_clock::now();
 
-        return Order{traderId, side, qty, price};
+        return Order{traderId, side, qty, price, now};
     }
 };
 
@@ -203,7 +234,7 @@ int main() {
     std::cout
         << "Welcome to Mini Exchange!\n"
         << "Please place trades in the format SIDE TRADER QTY PRICE (e.g. "
-            "SELL TIM 10 300).\n"
+           "SELL TIM 10 300).\n"
         << "Type EXIT to quit.\n";
 
     std::string line;
